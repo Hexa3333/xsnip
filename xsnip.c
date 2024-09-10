@@ -41,12 +41,13 @@ GC 		 gc;
 GC		 ogc;
 XWindowAttributes hoverw;
 
+int save;
 char*    fpath;
 uint8_t* buffer;
 uint8_t* keymap;
 
-// Set to config setting as default but can be override with -o or -t
-bool opaque_mode = OPAQUE;	
+// Set to config setting as default
+bool opaque_mode = TRANSPARENT;	
 
 int32_t exit_clean(char* err) {	
 	if(img) XDestroyImage(img);
@@ -68,42 +69,48 @@ int32_t exit_clean(char* err) {
 	return 0;
 }
 
-// Pretty ugly but should be safe.
-int32_t create_filename(bool save, char** ts) {
-	time_t cur = time(NULL);
+int32_t create_filename(int save, char** ts) {
+  if (fpath == NULL)
+  {
+    time_t cur = time(NULL);
 
-	if(save) {
-		const char* home;
-		if((home = getenv("HOME")) == NULL) {
-			home = getpwuid(getuid())->pw_dir;
-		}
+    // Save to disk
+    if(save & 0x01) {
+      const char* home;
+      if((home = getenv("HOME")) == NULL) {
+        home = getpwuid(getuid())->pw_dir;
+      }
 
-		// 29 = ctime-4 + .png + \0
-		uint32_t tsize = strlen(home) + strlen(SAVEDIR) + 29;		
-		*ts = malloc(sizeof(char) * tsize);
-		if(!*ts) 
-			return exit_clean("Could not allocate filename\n");
+      // 29 = ctime-4 + .png + \0
+      uint32_t tsize = strlen(home) + strlen(DEFAULT_SAVEDIR) + 29;
+      *ts = malloc(sizeof(char) * tsize);
+      if(!*ts)
+        return exit_clean("Could not allocate filename\n");
 
-		strncpy(*ts, home, strlen(home));
-		strncat(*ts, SAVEDIR, strlen(SAVEDIR)+1);
-	} else {
-		// 34 = ctime-4 + /tmp/ + .png + \0
-		*ts = malloc(sizeof(char) * 34);
-		if(!*ts) 
-			return exit_clean("Could not allocate filename\n");
-		strncpy(*ts, "/tmp/", 6);
-	}
+      strncpy(*ts, home, strlen(home));
+      strncat(*ts, DEFAULT_SAVEDIR, strlen(DEFAULT_SAVEDIR)+1);
+    }
 
-	// intentionally cut off the last 4 bytes of ctime() 
-	strncat(*ts, ctime(&cur), 24);
+    else {
+      // 34 = ctime-4 + /tmp/ + .png + \0
+      *ts = malloc(sizeof(char) * 34);
+      if(!*ts)
+        return exit_clean("Could not allocate filename\n");
+      strncpy(*ts, "/tmp/", 6);
+    }
 
+    // intentionally cut off the last 4 bytes of ctime()
+    strncat(*ts, ctime(&cur), 24);
+}
 	strncat(*ts, ".png", 6);
 
 	return 0;
 }
 
-int32_t create_png(uint8_t* buffer, uint32_t width, uint32_t height, bool save, char* ts) {
-	printf("creating %s (save=%d)\n", ts, save);
+int32_t create_png(uint8_t* buffer, uint32_t width, uint32_t height, int save, char* ts) {
+  // if saved to disk
+  if (save & 0x01)
+	  printf("creating %s \n", ts);
 
 	FILE *fp = fopen(ts, "wb");
 	if(!fp) 
@@ -145,14 +152,32 @@ int32_t create_png(uint8_t* buffer, uint32_t width, uint32_t height, bool save, 
 }
 
 int main(int argc, char** argv) {
-	// Primitive but really all that's needed
-	// TODO add help command and handle this better
-	if(argc > 1) {
-		if(!strcmp(argv[1], "-o"))
-			opaque_mode = true;
-		else if(!strcmp(argv[1], "-t"))
-			opaque_mode = false;	
-	}
+  int opt = 0;
+  while ((opt = getopt(argc, argv, "cto:")) != -1)
+  {
+    switch (opt)
+    {
+      // Clipboard
+      case 'c':
+      {
+        save |= 0x02;
+        break;
+      }
+      // Rename this?
+      case 't':
+      {
+        opaque_mode = OPAQUE;
+        break;
+      }
+      // Set output file path
+      case 'o':
+      {
+        save |= 0x05;
+        fpath = strdup(optarg);
+        break;
+      }
+    }
+  }
 
 	display = XOpenDisplay(NULL);
 	if(!display) 
@@ -173,7 +198,7 @@ int main(int argc, char** argv) {
 
 	// If there are compositor issues (black screen or blur) we can
 	// create a 24 bit image and paint a temporary screenshot onto it
-	// to achieve the same effect as a fully transparent 32 bit image.
+	// to achieve the same effect as a fully opaque 32 bit image.
 	if(opaque_mode)
 		XMatchVisualInfo(display, DefaultScreen(display), 24, TrueColor, &vinfo);
 	else
@@ -234,7 +259,6 @@ int main(int argc, char** argv) {
 	uint32_t mousex, mousey, mask;
 	uint32_t bsx, bsy, bex, bey;
 
-	bool save = false;
 	keymap = malloc(sizeof(uint8_t) * 32);
 	for(;;) {	
 		// Safe exit on keypress instead of forcing user to take a
@@ -261,14 +285,12 @@ int main(int argc, char** argv) {
 
 		if(mask == 256) {			// Left click
 			if(!grabbing) {
-				save = false;
 				grabbing = true;
 				startx = mousex;
 				starty = mousey;
 			} 
 		} else if(mask == 1024) {	// Right click
 			if(!grabbing) {
-				save = true;
 				grabbing = true;
 				startx = mousex;
 				starty = mousey;
@@ -386,7 +408,8 @@ int main(int argc, char** argv) {
 	// I would have liked to do a custom clipboard implementation
 	// but xlib selection handling has little documentation and
 	// many features are completely broken (such as XA_CLIPBOARD).
-	if(!save) {
+  /* Save to clipboard */
+	if(save & 0x02) {
 		const char* com = "xclip -selection clipboard -target image/png -i '";
 		char* command = malloc(sizeof(char) * (strlen(com) + strlen(fpath) + 2));
 		if(!command)
